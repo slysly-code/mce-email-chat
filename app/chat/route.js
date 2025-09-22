@@ -1,227 +1,362 @@
-import Anthropic from '@anthropic-ai/sdk';
-import axios from 'axios';
+// app/api/chat/route.js
+// Vercel API Route that connects to both Claude AI and MCE MCP Server
+
+import { Anthropic } from '@anthropic-ai/sdk';
 
 const anthropic = new Anthropic({
   apiKey: process.env.CLAUDE_API_KEY,
 });
 
 const MCE_SERVER_URL = process.env.MCE_SERVER_URL || 'https://salesforce-mce-api.fly.dev';
+const MCE_API_KEY = process.env.MCE_AUTH_TOKEN;
 
-// Validate required environment variables
-if (!process.env.CLAUDE_API_KEY) {
-  console.error('Missing CLAUDE_API_KEY environment variable');
-}
-if (!process.env.MCE_API_KEY) {
-  console.error('Missing MCE_API_KEY environment variable');
-}
+// System prompt that teaches Claude about MCE capabilities
+const SYSTEM_PROMPT = `You are an AI assistant specialized in creating marketing emails for Salesforce Marketing Cloud Engagement (MCE). 
 
-// Define tools for Claude
-const tools = [
-  {
-    name: "create_marketing_email",
-    description: "Create a marketing email in Salesforce Marketing Cloud Engagement",
-    input_schema: {
-      type: "object",
-      properties: {
-        subject: {
-          type: "string",
-          description: "Email subject line"
-        },
-        content: {
-          type: "string", 
-          description: "HTML or text content of the email"
-        },
-        fromName: {
-          type: "string",
-          description: "Sender name"
-        },
-        fromEmail: {
-          type: "string",
-          description: "Sender email address"
-        },
-        audience: {
-          type: "string",
-          description: "Target audience or data extension"
-        }
-      },
-      required: ["subject", "content"]
-    }
-  },
-  {
-    name: "get_data_extensions",
-    description: "List available data extensions in Salesforce MCE",
-    input_schema: {
-      type: "object",
-      properties: {}
-    }
-  },
-  {
-    name: "preview_email",
-    description: "Generate a preview of the email before sending",
-    input_schema: {
-      type: "object",
-      properties: {
-        subject: { type: "string" },
-        content: { type: "string" },
-        fromName: { type: "string" },
-        fromEmail: { type: "string" }
-      },
-      required: ["subject", "content"]
-    }
-  }
-];
+You have access to these tools via the MCE MCP Server:
 
-// Function to call MCE server
-async function callMCEServer(tool, params) {
-  try {
-    // Your MCE server uses X-API-Key header for authentication
-    const headers = {
-      'X-API-Key': process.env.MCE_API_KEY,
-      'Content-Type': 'application/json'
-    };
+1. **create_editable_email** - Creates fully editable emails in MCE Content Builder
+   - CRITICAL: Must use assetType.id = 207 (templatebasedemail) for editable emails
+   - Structure: Slots containing blocks (text, image, button)
+   - Each block needs content AND design versions
 
-    switch(tool) {
-      case 'create_marketing_email':
-        const response = await axios.post(`${MCE_SERVER_URL}/api/email/create`, {
-          subject: params.subject,
-          content: params.content,
-          fromName: params.fromName || 'Marketing Team',
-          fromEmail: params.fromEmail || 'marketing@company.com',
-          audience: params.audience || 'All Subscribers'
-        }, { headers });
-        return response.data;
+2. **create_journey** - Creates customer journeys with activities
+   - Activities: EMAILV2, WAIT, ENGAGEMENTDECISION, MULTICRITERIADECISION
+   - Entry modes: OnceAndDone, SingleEntryAcrossAllVersions
 
-      case 'get_data_extensions':
-        const dataExtResponse = await axios.get(`${MCE_SERVER_URL}/api/data-extensions`, { headers });
-        return dataExtResponse.data;
+3. **list_emails** - Lists existing emails
+4. **get_data_extensions** - Lists available data extensions
+5. **create_content_block** - Creates reusable content blocks
 
-      case 'preview_email':
-        return {
-          preview: {
-            subject: params.subject,
-            content: params.content,
-            fromName: params.fromName || 'Marketing Team',
-            fromEmail: params.fromEmail || 'marketing@company.com',
-            status: 'preview'
-          }
-        };
+When users ask to create emails, always:
+1. Clarify requirements (industry, tone, purpose)
+2. Show a preview of what will be created
+3. Create as editable email (not HTML paste)
+4. Confirm successful creation with email ID
 
-      default:
-        throw new Error(`Unknown tool: ${tool}`);
-    }
-  } catch (error) {
-    console.error(`Error calling MCE server:`, error.message);
-    throw error;
-  }
-}
-
-// Handle OPTIONS request for CORS
-export async function OPTIONS(request) {
-  return new Response(null, {
-    status: 200,
-    headers: {
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'POST, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type',
-    },
-  });
-}
+Available personalization: %%firstname%%, %%lastname%%, %%email%%`;
 
 export async function POST(request) {
   try {
-    const { message, conversationHistory = [] } = await request.json();
+    const { messages, action, parameters } = await request.json();
 
-    // Build message history
-    const messages = [
-      ...conversationHistory,
-      { role: 'user', content: message }
-    ];
+    // If there's a specific action, execute it
+    if (action) {
+      return await handleMCEAction(action, parameters);
+    }
 
-    // Call Claude with tools
+    // Otherwise, chat with Claude
     const response = await anthropic.messages.create({
-      model: 'claude-3-5-sonnet-20241022',
-      max_tokens: 1024,
-      tools: tools,
+      model: 'claude-3-opus-20240229',
+      max_tokens: 4000,
+      system: SYSTEM_PROMPT,
       messages: messages,
-      system: `You are a helpful assistant that helps create marketing emails in Salesforce Marketing Cloud Engagement. 
-               When users ask to create an email, gather the necessary information (subject, content, audience) and use the tools provided.
-               Always preview the email first before creating it in the system.
-               Be creative and helpful with email content suggestions.`
+      tools: [
+        {
+          name: 'create_editable_email',
+          description: 'Create a fully editable email in MCE Content Builder',
+          input_schema: {
+            type: 'object',
+            properties: {
+              name: { type: 'string', description: 'Email name' },
+              subject: { type: 'string', description: 'Email subject line' },
+              preheader: { type: 'string', description: 'Email preheader text' },
+              industry: { type: 'string', enum: ['retail', 'b2b', 'nonprofit', 'healthcare', 'general'] },
+              template_type: { type: 'string', enum: ['welcome', 'promotional', 'newsletter', 'abandoned_cart', 're_engagement'] },
+              slots: {
+                type: 'object',
+                properties: {
+                  header: { type: 'array', description: 'Header blocks' },
+                  body: { type: 'array', description: 'Body blocks' },
+                  footer: { type: 'array', description: 'Footer blocks' }
+                }
+              }
+            },
+            required: ['name', 'subject']
+          }
+        },
+        {
+          name: 'create_journey',
+          description: 'Create a customer journey in MCE',
+          input_schema: {
+            type: 'object',
+            properties: {
+              name: { type: 'string' },
+              type: { type: 'string', enum: ['welcome', 'abandoned_cart', 're_engagement', 'nurture'] },
+              activities: { type: 'array' }
+            },
+            required: ['name', 'type']
+          }
+        },
+        {
+          name: 'list_emails',
+          description: 'List existing emails in MCE',
+          input_schema: {
+            type: 'object',
+            properties: {
+              page: { type: 'number', default: 1 },
+              pageSize: { type: 'number', default: 10 }
+            }
+          }
+        },
+        {
+          name: 'preview_email',
+          description: 'Show preview of email before creating',
+          input_schema: {
+            type: 'object',
+            properties: {
+              html: { type: 'string' },
+              subject: { type: 'string' }
+            }
+          }
+        }
+      ]
     });
 
     // Check if Claude wants to use a tool
     if (response.stop_reason === 'tool_use') {
       const toolUse = response.content.find(c => c.type === 'tool_use');
-      
       if (toolUse) {
-        try {
-          // Execute the tool
-          const toolResult = await callMCEServer(toolUse.name, toolUse.input);
-          
-          // Get final response from Claude
-          const followUpResponse = await anthropic.messages.create({
-            model: 'claude-3-5-sonnet-20241022',
-            max_tokens: 1024,
-            tools: tools,
-            messages: [
-              ...messages,
-              { role: 'assistant', content: response.content },
-              { 
-                role: 'user', 
-                content: [
-                  {
-                    type: 'tool_result',
-                    tool_use_id: toolUse.id,
-                    content: JSON.stringify(toolResult)
-                  }
-                ]
-              }
-            ]
-          });
-
-          return Response.json({
-            response: followUpResponse.content[0].text,
-            toolCalled: toolUse.name,
-            toolResult: toolResult
-          }, {
-            headers: {
-              'Content-Type': 'application/json',
-            }
-          });
-        } catch (toolError) {
-          return Response.json({
-            response: `I encountered an error while executing the ${toolUse.name} tool: ${toolError.message}. Let me help you another way.`,
-            error: true
-          }, {
-            headers: {
-              'Content-Type': 'application/json',
-            }
-          });
-        }
+        const result = await handleMCEAction(toolUse.name, toolUse.input);
+        
+        // Return both Claude's message and tool result
+        return Response.json({
+          message: response.content.find(c => c.type === 'text')?.text || '',
+          toolResult: result
+        });
       }
     }
 
-    // Regular response without tool use
-    const responseText = response.content[0]?.text || 'I can help you create marketing emails for Salesforce Marketing Cloud. Try asking me to create a welcome email or list available data extensions.';
-    return Response.json({
-      response: responseText
-    }, {
-      headers: {
-        'Content-Type': 'application/json',
-      }
+    return Response.json({ 
+      message: response.content[0].text,
+      usage: response.usage 
     });
 
   } catch (error) {
-    console.error('Error:', error);
-    return Response.json({ 
-      error: 'An error occurred processing your request',
-      details: process.env.NODE_ENV === 'development' ? error.message : 'Please check the server logs',
-      type: error.name
-    }, { 
-      status: 500,
-      headers: {
-        'Content-Type': 'application/json',
-      }
-    });
+    console.error('Chat API error:', error);
+    return Response.json(
+      { error: 'Failed to process request', details: error.message },
+      { status: 500 }
+    );
   }
+}
+
+async function handleMCEAction(action, parameters) {
+  try {
+    const headers = {
+      'Content-Type': 'application/json',
+      'X-API-Key': MCE_API_KEY
+    };
+
+    let endpoint = '';
+    let method = 'POST';
+    let body = {};
+
+    switch (action) {
+      case 'create_editable_email':
+        endpoint = '/api/email/create-editable';
+        body = createEditableEmailPayload(parameters);
+        break;
+
+      case 'list_emails':
+        endpoint = '/api/email/list';
+        method = 'GET';
+        break;
+
+      case 'create_journey':
+        endpoint = '/api/journey/create';
+        body = createJourneyPayload(parameters);
+        break;
+
+      case 'get_data_extensions':
+        endpoint = '/api/data-extensions';
+        method = 'GET';
+        break;
+
+      case 'preview_email':
+        // This is handled client-side
+        return {
+          action: 'preview',
+          data: parameters
+        };
+
+      default:
+        throw new Error(`Unknown action: ${action}`);
+    }
+
+    const response = await fetch(`${MCE_SERVER_URL}${endpoint}`, {
+      method,
+      headers,
+      body: method !== 'GET' ? JSON.stringify(body) : undefined
+    });
+
+    if (!response.ok) {
+      throw new Error(`MCE Server error: ${response.statusText}`);
+    }
+
+    const data = await response.json();
+    return {
+      success: true,
+      action,
+      data
+    };
+
+  } catch (error) {
+    console.error('MCE Action error:', error);
+    return {
+      success: false,
+      error: error.message
+    };
+  }
+}
+
+function createEditableEmailPayload(params) {
+  // Structure for fully editable email (assetType 207)
+  return {
+    data: {
+      email: {
+        options: {
+          characterEncoding: "utf-8"
+        }
+      }
+    },
+    name: params.name,
+    assetType: {
+      id: 207, // CRITICAL: Template-based email for editability
+      name: "templatebasedemail"
+    },
+    category: {
+      id: 2073800
+    },
+    meta: {
+      globalStyles: {
+        isLocked: false,
+        body: {
+          "font-family": "Arial,helvetica,sans-serif",
+          "font-size": "16px",
+          "color": "#000000",
+          "background-color": "#FFFFFF"
+        }
+      }
+    },
+    views: {
+      subjectline: { content: params.subject },
+      preheader: { content: params.preheader || "" },
+      html: {
+        content: generateHTMLTemplate(params.slots),
+        slots: generateSlotStructure(params.slots),
+        template: {
+          id: 0,
+          assetType: { id: 214, name: "defaulttemplate" },
+          name: "CONTENTTEMPLATES_C",
+          slots: Object.keys(params.slots || {}).reduce((acc, key) => {
+            acc[key] = { locked: false };
+            return acc;
+          }, {})
+        }
+      }
+    }
+  };
+}
+
+function generateHTMLTemplate(slots = {}) {
+  const slotKeys = Object.keys(slots);
+  const slotHTML = slotKeys.map(key => 
+    `<tr><td><div data-type="slot" data-key="${key}"></div></td></tr>`
+  ).join('');
+  
+  return `<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<html>
+<head>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
+</head>
+<body bgcolor="#ffffff">
+  <div style="font-size:0; line-height:0;">
+    <custom name="opencounter" type="tracking">
+    <custom name="usermatch" type="tracking" />
+  </div>
+  <table width="100%" border="0" cellpadding="0" cellspacing="0">
+    <tr><td align="center">
+      <table width="600" class="container">
+        ${slotHTML}
+      </table>
+    </td></tr>
+  </table>
+  <custom type="footer" />
+</body>
+</html>`;
+}
+
+function generateSlotStructure(slots = {}) {
+  const slotStructure = {};
+  
+  // Default slot structure if none provided
+  if (Object.keys(slots).length === 0) {
+    slots = {
+      header: [{
+        key: "header-block",
+        type: "image",
+        content: '<table width="100%"><tr><td align="center" style="padding:20px;"><img src="https://via.placeholder.com/600x200" alt="Header"></td></tr></table>'
+      }],
+      body: [{
+        key: "body-text",
+        type: "text",
+        content: '<table width="100%"><tr><td style="padding:20px;"><h1>Welcome!</h1><p>Your content here.</p></td></tr></table>'
+      }]
+    };
+  }
+  
+  Object.entries(slots).forEach(([slotKey, blocks]) => {
+    slotStructure[slotKey] = {
+      content: blocks.map(b => `<div data-type="block" data-key="${b.key}"></div>`).join(''),
+      design: '<p style="border: #cccccc dashed 1px;">Drop blocks here</p>',
+      blocks: blocks.reduce((acc, block) => {
+        acc[block.key] = createBlock(block);
+        return acc;
+      }, {})
+    };
+  });
+  
+  return slotStructure;
+}
+
+function createBlock(block) {
+  const assetTypes = {
+    text: { id: 196, name: "textblock" },
+    image: { id: 199, name: "imageblock" },
+    button: { id: 195, name: "buttonblock" },
+    html: { id: 197, name: "htmlblock" }
+  };
+  
+  return {
+    assetType: assetTypes[block.type] || assetTypes.text,
+    content: block.content,
+    design: block.design || '<div style="padding:20px;">Block preview</div>',
+    meta: {
+      wrapperStyles: {
+        mobile: { visible: true },
+        styling: block.styling || {}
+      }
+    }
+  };
+}
+
+function createJourneyPayload(params) {
+  // Journey creation payload
+  return {
+    key: `journey-${Date.now()}`,
+    name: params.name,
+    status: "Draft",
+    entryMode: "SingleEntryAcrossAllVersions",
+    definitionType: "Multistep",
+    workflowApiVersion: 1,
+    triggers: [{
+      key: "TRIGGER-1",
+      name: "Entry Trigger",
+      type: "AutomationAudience",
+      arguments: { startActivityKey: "{{Context.StartActivityKey}}" }
+    }],
+    activities: params.activities || []
+  };
 }
