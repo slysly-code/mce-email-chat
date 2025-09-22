@@ -7,6 +7,14 @@ const anthropic = new Anthropic({
 
 const MCE_SERVER_URL = process.env.MCE_SERVER_URL || 'https://salesforce-mce-api.fly.dev';
 
+// Validate required environment variables
+if (!process.env.CLAUDE_API_KEY) {
+  console.error('Missing CLAUDE_API_KEY environment variable');
+}
+if (!process.env.MCE_API_KEY) {
+  console.error('Missing MCE_API_KEY environment variable');
+}
+
 // Define tools for Claude
 const tools = [
   {
@@ -66,8 +74,9 @@ const tools = [
 // Function to call MCE server
 async function callMCEServer(tool, params) {
   try {
+    // Your MCE server uses X-API-Key header for authentication
     const headers = {
-      'Authorization': `Bearer ${process.env.MCE_AUTH_TOKEN}`,
+      'X-API-Key': process.env.MCE_API_KEY,
       'Content-Type': 'application/json'
     };
 
