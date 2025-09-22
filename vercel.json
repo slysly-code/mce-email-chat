@@ -1,0 +1,8 @@
+// vercel.json
+{
+  "functions": {
+    "app/api/chat/route.js": {
+      "maxDuration": 30
+    }
+  }
+}
