@@ -115,6 +115,18 @@ async function callMCEServer(tool, params) {
   }
 }
 
+// Handle OPTIONS request for CORS
+export async function OPTIONS(request) {
+  return new Response(null, {
+    status: 200,
+    headers: {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'POST, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type',
+    },
+  });
+}
+
 export async function POST(request) {
   try {
     const { message, conversationHistory = [] } = await request.json();
@@ -171,26 +183,45 @@ export async function POST(request) {
             response: followUpResponse.content[0].text,
             toolCalled: toolUse.name,
             toolResult: toolResult
+          }, {
+            headers: {
+              'Content-Type': 'application/json',
+            }
           });
         } catch (toolError) {
           return Response.json({
             response: `I encountered an error while executing the ${toolUse.name} tool: ${toolError.message}. Let me help you another way.`,
             error: true
+          }, {
+            headers: {
+              'Content-Type': 'application/json',
+            }
           });
         }
       }
     }
 
     // Regular response without tool use
+    const responseText = response.content[0]?.text || 'I can help you create marketing emails for Salesforce Marketing Cloud. Try asking me to create a welcome email or list available data extensions.';
     return Response.json({
-      response: response.content[0].text
+      response: responseText
+    }, {
+      headers: {
+        'Content-Type': 'application/json',
+      }
     });
 
   } catch (error) {
     console.error('Error:', error);
     return Response.json({ 
       error: 'An error occurred processing your request',
-      details: error.message 
-    }, { status: 500 });
+      details: process.env.NODE_ENV === 'development' ? error.message : 'Please check the server logs',
+      type: error.name
+    }, { 
+      status: 500,
+      headers: {
+        'Content-Type': 'application/json',
+      }
+    });
   }
 }
