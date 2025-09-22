@@ -1,7 +1,6 @@
 {
   "name": "mce-email-chat",
   "version": "1.0.0",
-  "type": "module",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
