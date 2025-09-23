@@ -1,6 +1,59 @@
 // app/chat/route.js
 import { Anthropic } from '@anthropic-ai/sdk';
 
+// List of models to try, in order of preference
+const CLAUDE_MODELS = [
+  'claude-3-5-sonnet-20241022',  // Try latest first
+  'claude-3-5-sonnet-20240620',  // Stable June version
+  'claude-3-sonnet-20240229',    // Fallback to older Sonnet
+  'claude-3-haiku-20240307',     // Last resort - fastest/cheapest
+];
+
+// Cache the working model to avoid checking every time
+let workingModel = null;
+
+// Function to find the first working model
+async function getWorkingModel(anthropic) {
+  // If we already found a working model, use it
+  if (workingModel) {
+    console.log('Using cached model:', workingModel);
+    return workingModel;
+  }
+
+  console.log('Testing available Claude models...');
+  
+  for (const model of CLAUDE_MODELS) {
+    try {
+      console.log(`Testing model: ${model}`);
+      
+      // Try a minimal API call to test if the model exists
+      const testResponse = await anthropic.messages.create({
+        model: model,
+        max_tokens: 10,
+        messages: [{ role: 'user', content: 'Hi' }],
+      });
+      
+      // If we get here, the model works!
+      console.log(`✅ Model ${model} is available and working`);
+      workingModel = model; // Cache it
+      return model;
+      
+    } catch (error) {
+      if (error.status === 404) {
+        console.log(`❌ Model ${model} not found, trying next...`);
+      } else if (error.status === 401) {
+        // API key issue, don't continue trying models
+        throw error;
+      } else {
+        console.log(`⚠️ Model ${model} error: ${error.message}`);
+      }
+    }
+  }
+  
+  // If no models worked
+  throw new Error('No available Claude models found. Please check your API key and subscription.');
+}
+
 // Helper to call your MCP server
 async function callMCPServer(action, params) {
   const MCE_SERVER_URL = process.env.MCE_SERVER_URL || 'https://salesforce-mce-api.fly.dev';
@@ -54,6 +107,34 @@ export async function POST(request) {
       apiKey: process.env.CLAUDE_API_KEY,
     });
 
+    // Find a working model
+    let modelToUse;
+    try {
+      modelToUse = await getWorkingModel(anthropic);
+      console.log('Using model:', modelToUse);
+    } catch (modelError) {
+      console.error('Model selection failed:', modelError);
+      
+      if (modelError.status === 401) {
+        return Response.json(
+          { 
+            error: 'Invalid Claude API key',
+            details: 'Please check your CLAUDE_API_KEY in Vercel settings'
+          },
+          { status: 500 }
+        );
+      }
+      
+      return Response.json(
+        { 
+          error: 'No available Claude models',
+          details: modelError.message,
+          testedModels: CLAUDE_MODELS
+        },
+        { status: 500 }
+      );
+    }
+
     // Parse the incoming request
     const body = await request.json();
     console.log('Request received with messages count:', body.messages?.length);
@@ -86,11 +167,11 @@ export async function POST(request) {
 
     // Non-streaming response
     if (!stream) {
-      console.log('Creating non-streaming Claude response...');
+      console.log(`Creating non-streaming response with model: ${modelToUse}`);
       
       try {
         const response = await anthropic.messages.create({
-          model: 'claude-3-5-sonnet-20241022',  // Fixed model name!
+          model: modelToUse,  // Use the working model
           max_tokens: 1024,
           messages: allMessages.filter(m => m.role !== 'system'), // Remove system for messages array
           system: systemPrompt.content, // Add system content separately
@@ -123,6 +204,7 @@ export async function POST(request) {
         return Response.json({
           content: content,
           mceResult: mceResult,
+          model: modelToUse,  // Include which model was used
         });
 
       } catch (claudeError) {
@@ -149,7 +231,8 @@ export async function POST(request) {
           return Response.json(
             { 
               error: 'Claude API error',
-              details: claudeError.message || 'Unknown error occurred'
+              details: claudeError.message || 'Unknown error occurred',
+              model: modelToUse
             },
             { status: 500 }
           );
@@ -158,11 +241,11 @@ export async function POST(request) {
     }
 
     // Streaming response
-    console.log('Creating streaming Claude response...');
+    console.log(`Creating streaming response with model: ${modelToUse}`);
     
     try {
       const claudeStream = await anthropic.messages.create({
-        model: 'claude-3-5-sonnet-20241022',  // Fixed model name!
+        model: modelToUse,  // Use the working model
         max_tokens: 1024,
         messages: allMessages.filter(m => m.role !== 'system'),
         system: systemPrompt.content,
@@ -176,6 +259,9 @@ export async function POST(request) {
       const readableStream = new ReadableStream({
         async start(controller) {
           try {
+            // Send model info at the start
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify({ model: modelToUse })}\n\n`));
+            
             for await (const chunk of claudeStream) {
               const text = chunk.delta?.text || '';
               if (text) {
@@ -220,7 +306,8 @@ export async function POST(request) {
       return Response.json(
         { 
           error: 'Claude streaming error',
-          details: claudeError.message || 'Unknown error occurred'
+          details: claudeError.message || 'Unknown error occurred',
+          model: modelToUse
         },
         { status: 500 }
       );
