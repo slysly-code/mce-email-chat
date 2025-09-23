@@ -1,14 +1,20 @@
+// app/layout.js
 import './globals.css';
+import Providers from './providers';
 
 export const metadata = {
-  title: 'MCE Email Builder',
-  description: 'Create marketing emails with AI assistance',
+  title: 'MCE Email Chat',
+  description: 'AI-powered chat interface for Salesforce Marketing Cloud',
 };
 
 export default function RootLayout({ children }) {
   return (
     <html lang="en">
-      <body>{children}</body>
+      <body>
+        <Providers>
+          {children}
+        </Providers>
+      </body>
     </html>
   );
 }
