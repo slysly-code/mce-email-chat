@@ -90,7 +90,7 @@ export async function POST(request) {
       
       try {
         const response = await anthropic.messages.create({
-          model: 'claude-3-sonnet-20241022',
+          model: 'claude-3-5-sonnet-20241022',  // Fixed model name!
           max_tokens: 1024,
           messages: allMessages.filter(m => m.role !== 'system'), // Remove system for messages array
           system: systemPrompt.content, // Add system content separately
@@ -162,7 +162,7 @@ export async function POST(request) {
     
     try {
       const claudeStream = await anthropic.messages.create({
-        model: 'claude-3-sonnet-20241022',
+        model: 'claude-3-5-sonnet-20241022',  // Fixed model name!
         max_tokens: 1024,
         messages: allMessages.filter(m => m.role !== 'system'),
         system: systemPrompt.content,
