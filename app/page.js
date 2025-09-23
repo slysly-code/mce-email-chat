@@ -27,7 +27,7 @@ export default function ChatPage() {
   const testConnection = async () => {
     try {
       setConnectionStatus('testing');
-      const response = await fetch('/api/chat', {
+      const response = await fetch('/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -63,7 +63,7 @@ export default function ChatPage() {
     try {
       const useStreaming = false; // Start with non-streaming for debugging
 
-      const response = await fetch('/api/chat', {
+      const response = await fetch('/chat', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
