@@ -1,263 +1,283 @@
-// app/page.js
-// Main chat interface for MCE Email creation
-
+// app/page.js or your chat component
 'use client';
 
 import { useState, useRef, useEffect } from 'react';
 
 export default function ChatPage() {
-  const [messages, setMessages] = useState([
-    {
-      role: 'assistant',
-      content: 'Hi! I can help you create marketing emails and journeys in Salesforce Marketing Cloud. What would you like to create today?'
-    }
-  ]);
+  const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [emailPreview, setEmailPreview] = useState(null);
+  const [error, setError] = useState(null);
+  const [connectionStatus, setConnectionStatus] = useState('disconnected');
   const messagesEndRef = useRef(null);
 
   const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   };
 
   useEffect(() => {
     scrollToBottom();
   }, [messages]);
 
-  const quickActions = [
-    { label: '📧 Create Welcome Email', prompt: 'Create a welcome email for new subscribers with personalization' },
-    { label: '🛒 Abandoned Cart', prompt: 'Build an abandoned cart recovery email with a 15% discount' },
-    { label: '📰 Newsletter', prompt: 'Create a monthly newsletter template with multiple content sections' },
-    { label: '🎯 Re-engagement', prompt: 'Design a re-engagement email for inactive subscribers' },
-    { label: '📊 List Emails', prompt: 'Show me the list of existing emails' },
-    { label: '🗂️ Data Extensions', prompt: 'List available data extensions' }
-  ];
+  // Test connection on mount
+  useEffect(() => {
+    testConnection();
+  }, []);
+
+  const testConnection = async () => {
+    try {
+      setConnectionStatus('testing');
+      const response = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          messages: [{ role: 'user', content: 'test' }],
+          stream: false,
+        }),
+      });
+      
+      if (response.ok) {
+        setConnectionStatus('connected');
+        setError(null);
+      } else {
+        setConnectionStatus('error');
+        setError('API connection failed');
+      }
+    } catch (error) {
+      setConnectionStatus('error');
+      setError(`Connection test failed: ${error.message}`);
+    }
+  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (!input.trim() || isLoading) return;
 
     const userMessage = { role: 'user', content: input };
-    setMessages(prev => [...prev, userMessage]);
+    const newMessages = [...messages, userMessage];
+    setMessages(newMessages);
     setInput('');
     setIsLoading(true);
+    setError(null);
 
     try {
+      const useStreaming = false; // Start with non-streaming for debugging
+
       const response = await fetch('/api/chat', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+        },
         body: JSON.stringify({
-          messages: [...messages, userMessage].map(m => ({
+          messages: newMessages.map(m => ({
             role: m.role,
-            content: m.content
-          }))
-        })
+            content: m.content,
+          })),
+          stream: useStreaming,
+        }),
       });
 
-      const data = await response.json();
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || `HTTP error! status: ${response.status}`);
+      }
 
-      if (data.error) {
-        setMessages(prev => [...prev, {
+      if (!useStreaming) {
+        // Non-streaming response
+        const data = await response.json();
+        setMessages([...newMessages, {
           role: 'assistant',
-          content: `Error: ${data.error}`,
-          isError: true
+          content: data.content,
+          mceResult: data.mceResult,
         }]);
       } else {
-        // Handle tool results
-        if (data.toolResult) {
-          handleToolResult(data.toolResult, data.message);
-        } else {
-          setMessages(prev => [...prev, {
-            role: 'assistant',
-            content: data.message
-          }]);
+        // Streaming response
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let assistantMessage = { role: 'assistant', content: '', mceResult: null };
+
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+
+          const chunk = decoder.decode(value, { stream: true });
+          const lines = chunk.split('\n');
+
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              const data = line.slice(6);
+              
+              if (data === '[DONE]') {
+                setMessages([...newMessages, assistantMessage]);
+                break;
+              }
+
+              try {
+                const parsed = JSON.parse(data);
+                
+                if (parsed.text) {
+                  assistantMessage.content += parsed.text;
+                  setMessages([...newMessages, { ...assistantMessage }]);
+                }
+                
+                if (parsed.mceResult) {
+                  assistantMessage.mceResult = parsed.mceResult;
+                  setMessages([...newMessages, { ...assistantMessage }]);
+                }
+              } catch (e) {
+                console.error('Parse error:', e, 'Raw data:', data);
+              }
+            }
+          }
         }
       }
     } catch (error) {
-      setMessages(prev => [...prev, {
+      console.error('Chat error:', error);
+      setError(`Error: ${error.message}`);
+      setMessages([...newMessages, {
         role: 'assistant',
-        content: `Connection error: ${error.message}`,
-        isError: true
+        content: `Sorry, I encountered an error: ${error.message}`,
+        isError: true,
       }]);
     } finally {
       setIsLoading(false);
     }
   };
 
-  const handleToolResult = (toolResult, message) => {
-    if (toolResult.action === 'preview') {
-      setEmailPreview(toolResult.data);
-      setMessages(prev => [...prev, {
-        role: 'assistant',
-        content: message || 'Here\'s a preview of your email. Click "Create in MCE" to proceed.',
-        preview: toolResult.data
-      }]);
-    } else if (toolResult.success) {
-      setMessages(prev => [...prev, {
-        role: 'assistant',
-        content: message || `✅ Successfully completed: ${toolResult.action}`,
-        data: toolResult.data
-      }]);
-    } else {
-      setMessages(prev => [...prev, {
-        role: 'assistant',
-        content: `❌ Failed: ${toolResult.error}`,
-        isError: true
-      }]);
-    }
-  };
+  const quickActions = [
+    'Create a welcome email',
+    'Build a promotional email',
+    'List data extensions',
+    'Create a journey',
+  ];
 
-  const createEmailInMCE = async () => {
-    if (!emailPreview) return;
-    
-    setIsLoading(true);
-    try {
-      const response = await fetch('/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          action: 'create_editable_email',
-          parameters: emailPreview
-        })
-      });
-
-      const data = await response.json();
-      handleToolResult(data.toolResult || data, 'Email created successfully in MCE!');
-    } catch (error) {
-      setMessages(prev => [...prev, {
-        role: 'assistant',
-        content: `Failed to create email: ${error.message}`,
-        isError: true
-      }]);
-    } finally {
-      setIsLoading(false);
-      setEmailPreview(null);
-    }
-  };
-
-  const handleQuickAction = (prompt) => {
-    setInput(prompt);
+  const handleQuickAction = (action) => {
+    setInput(action);
   };
 
   return (
-    <div className="flex flex-col h-screen bg-gray-50">
-      {/* Header */}
-      <div className="bg-white border-b border-gray-200 px-6 py-4">
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-2xl font-bold text-gray-900">MCE Email Creator</h1>
-            <p className="text-sm text-gray-500">Powered by Claude AI & MCP Server</p>
-          </div>
-          <div className="flex items-center space-x-2">
-            <div className="w-3 h-3 bg-green-400 rounded-full animate-pulse"></div>
-            <span className="text-sm text-gray-600">Connected to MCE</span>
+    <div className="flex flex-col h-screen max-w-4xl mx-auto p-4">
+      <div className="bg-white rounded-lg shadow-lg flex-1 flex flex-col">
+        {/* Header */}
+        <div className="border-b p-4">
+          <h1 className="text-2xl font-bold">MCE Email Chat</h1>
+          <div className="flex items-center gap-2 mt-2">
+            <span className="text-sm text-gray-600">Status:</span>
+            <span className={`text-sm font-medium ${
+              connectionStatus === 'connected' ? 'text-green-600' : 
+              connectionStatus === 'error' ? 'text-red-600' : 
+              'text-yellow-600'
+            }`}>
+              {connectionStatus}
+            </span>
           </div>
         </div>
-      </div>
 
-      {/* Quick Actions */}
-      <div className="bg-white border-b border-gray-100 px-6 py-3">
-        <div className="flex gap-2 overflow-x-auto">
-          {quickActions.map((action, idx) => (
-            <button
-              key={idx}
-              onClick={() => handleQuickAction(action.prompt)}
-              className="flex-shrink-0 px-4 py-2 bg-blue-50 text-blue-700 rounded-lg hover:bg-blue-100 transition-colors text-sm font-medium"
-            >
-              {action.label}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {/* Messages */}
-      <div className="flex-1 overflow-y-auto px-6 py-4">
-        <div className="max-w-4xl mx-auto space-y-4">
-          {messages.map((message, idx) => (
-            <div
-              key={idx}
-              className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}
-            >
-              <div
-                className={`max-w-2xl px-4 py-3 rounded-lg ${
-                  message.role === 'user'
-                    ? 'bg-blue-600 text-white'
-                    : message.isError
-                    ? 'bg-red-50 text-red-900 border border-red-200'
-                    : 'bg-white shadow-sm border border-gray-200'
-                }`}
-              >
-                <div className="whitespace-pre-wrap">{message.content}</div>
-                
-                {/* Email Preview */}
-                {message.preview && (
-                  <div className="mt-4 p-4 bg-gray-50 rounded-lg">
-                    <h3 className="font-semibold mb-2">Email Preview:</h3>
-                    <div className="bg-white p-2 rounded border border-gray-200">
-                      <p className="text-sm text-gray-600 mb-1">Subject: {message.preview.subject}</p>
-                      {message.preview.preheader && (
-                        <p className="text-sm text-gray-500 mb-2">Preheader: {message.preview.preheader}</p>
-                      )}
-                      <div className="border-t pt-2">
-                        <div dangerouslySetInnerHTML={{ __html: message.preview.html }} />
-                      </div>
-                    </div>
-                    <button
-                      onClick={createEmailInMCE}
-                      className="mt-3 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700"
-                    >
-                      Create in MCE
-                    </button>
-                  </div>
-                )}
-
-                {/* Data Display */}
-                {message.data && (
-                  <div className="mt-3 p-3 bg-gray-50 rounded text-sm">
-                    <pre className="overflow-x-auto">
-                      {JSON.stringify(message.data, null, 2)}
-                    </pre>
-                  </div>
-                )}
+        {/* Error Banner */}
+        {error && (
+          <div className="bg-red-50 border-l-4 border-red-400 p-4">
+            <div className="flex">
+              <div className="ml-3">
+                <p className="text-sm text-red-700">{error}</p>
               </div>
+              <button
+                onClick={() => setError(null)}
+                className="ml-auto text-red-400 hover:text-red-600"
+              >
+                ✕
+              </button>
             </div>
-          ))}
-          
-          {isLoading && (
-            <div className="flex justify-start">
-              <div className="bg-white shadow-sm border border-gray-200 px-4 py-3 rounded-lg">
-                <div className="flex space-x-2">
-                  <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce"></div>
-                  <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0.1s' }}></div>
-                  <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></div>
+          </div>
+        )}
+
+        {/* Messages */}
+        <div className="flex-1 overflow-y-auto p-4 space-y-4">
+          {messages.length === 0 && (
+            <div className="text-center text-gray-500 mt-8">
+              <p>Start a conversation to create Marketing Cloud emails and journeys!</p>
+              <div className="mt-4">
+                <p className="text-sm mb-2">Try one of these:</p>
+                <div className="flex flex-wrap gap-2 justify-center">
+                  {quickActions.map((action, i) => (
+                    <button
+                      key={i}
+                      onClick={() => handleQuickAction(action)}
+                      className="px-3 py-1 text-sm bg-blue-100 text-blue-700 rounded-full hover:bg-blue-200"
+                    >
+                      {action}
+                    </button>
+                  ))}
                 </div>
               </div>
             </div>
           )}
-          
+
+          {messages.map((message, index) => (
+            <div
+              key={index}
+              className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}
+            >
+              <div
+                className={`max-w-[70%] rounded-lg p-4 ${
+                  message.role === 'user'
+                    ? 'bg-blue-500 text-white'
+                    : message.isError
+                    ? 'bg-red-100 text-red-800'
+                    : 'bg-gray-100 text-gray-800'
+                }`}
+              >
+                <p className="whitespace-pre-wrap">{message.content}</p>
+                
+                {message.mceResult && (
+                  <div className="mt-2 p-2 bg-green-100 rounded text-green-800 text-sm">
+                    <p className="font-semibold">MCE Action Completed:</p>
+                    <pre>{JSON.stringify(message.mceResult, null, 2)}</pre>
+                  </div>
+                )}
+              </div>
+            </div>
+          ))}
+
+          {isLoading && (
+            <div className="flex justify-start">
+              <div className="bg-gray-100 rounded-lg p-4">
+                <div className="flex space-x-2">
+                  <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce"></div>
+                  <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce delay-100"></div>
+                  <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce delay-200"></div>
+                </div>
+              </div>
+            </div>
+          )}
+
           <div ref={messagesEndRef} />
         </div>
-      </div>
 
-      {/* Input */}
-      <div className="bg-white border-t border-gray-200 px-6 py-4">
-        <form onSubmit={handleSubmit} className="max-w-4xl mx-auto">
-          <div className="flex space-x-4">
+        {/* Input Form */}
+        <form onSubmit={handleSubmit} className="border-t p-4">
+          <div className="flex gap-2">
             <input
               type="text"
               value={input}
               onChange={(e) => setInput(e.target.value)}
               placeholder="Ask me to create an email or journey..."
-              className="flex-1 px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="flex-1 px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
               disabled={isLoading}
             />
             <button
               type="submit"
               disabled={isLoading || !input.trim()}
-              className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              className="px-6 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              {isLoading ? 'Processing...' : 'Send'}
+              Send
+            </button>
+            <button
+              type="button"
+              onClick={testConnection}
+              className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300"
+              title="Test Connection"
+            >
+              🔌
             </button>
           </div>
         </form>
