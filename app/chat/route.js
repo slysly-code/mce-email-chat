@@ -1,163 +1,97 @@
-// app/chat/route.js
+// app/chat/route.js - WITH FULL DEBUG LOGGING
 import { Anthropic } from '@anthropic-ai/sdk';
-
-// Model preferences (partial matches, in order of preference)
-const MODEL_PREFERENCES = [
-  'claude-3-5-sonnet',  // Latest Sonnet 3.5
-  'claude-3-sonnet',    // Any Sonnet
-  'claude-3-opus',      // Most capable
-  'claude-3-haiku',     // Fastest
-  'claude',             // Any Claude model as last resort
-];
-
-// Cache the working model to avoid checking every time
-let cachedModel = null;
-let lastModelCheck = null;
-const MODEL_CACHE_DURATION = 1000 * 60 * 60; // 1 hour
-
-// Function to select the best available model
-async function selectBestModel(anthropic) {
-  // Check if we have a recent cached model
-  const now = Date.now();
-  if (cachedModel && lastModelCheck && (now - lastModelCheck < MODEL_CACHE_DURATION)) {
-    console.log('Using cached model:', cachedModel);
-    return cachedModel;
-  }
-
-  console.log('Selecting best available Claude model...');
-  
-  // Since Anthropic SDK doesn't provide a list models endpoint,
-  // we'll use a smart fallback approach
-  const fallbackModels = [
-    'claude-3-5-sonnet-latest',  // Try "latest" alias first
-    'claude-3-5-sonnet-20240620', // Known stable version
-    'claude-3-sonnet-20240229',   // Older stable version
-    'claude-3-haiku-20240307',    // Fast fallback
-  ];
-
-  // First, try common model aliases
-  for (const model of fallbackModels) {
-    try {
-      console.log(`Testing model: ${model}`);
-      
-      // Try a minimal API call to test if the model exists
-      await anthropic.messages.create({
-        model: model,
-        max_tokens: 1,
-        messages: [{ role: 'user', content: 'test' }],
-      });
-      
-      console.log(`✅ Model ${model} is available`);
-      cachedModel = model;
-      lastModelCheck = now;
-      return model;
-      
-    } catch (error) {
-      if (error.status === 404) {
-        console.log(`Model ${model} not found, trying next...`);
-        continue;
-      } else if (error.status === 401) {
-        throw new Error('Invalid API key');
-      } else if (error.status === 429) {
-        // Rate limited on test, but model exists
-        console.log(`Model ${model} exists (rate limited on test)`);
-        cachedModel = model;
-        lastModelCheck = now;
-        return model;
-      }
-      // For other errors, continue to next model
-      console.log(`Model ${model} error: ${error.message}`);
-    }
-  }
-  
-  throw new Error('No available Claude models found. Please check your API key.');
-}
 
 // Helper to call your MCP server
 async function callMCPServer(action, params) {
   const MCE_SERVER_URL = process.env.MCE_SERVER_URL || 'https://salesforce-mce-api.fly.dev';
-  const MCE_AUTH_TOKEN = process.env.MCE_AUTH_TOKEN;
+  const MCE_API_KEY = process.env.MCE_API_KEY;
 
-  if (!MCE_AUTH_TOKEN) {
-    console.error('MCE_AUTH_TOKEN is not set');
-    return { error: 'MCE configuration missing' };
+  console.log('=== MCE API CALL DEBUG ===');
+  console.log('URL:', `${MCE_SERVER_URL}/api/${action}`);
+  console.log('Has API Key:', !!MCE_API_KEY);
+  console.log('API Key first 10 chars:', MCE_API_KEY?.substring(0, 10) + '...');
+  console.log('Params:', JSON.stringify(params, null, 2));
+
+  if (!MCE_API_KEY) {
+    console.error('❌ MCE_API_KEY is not set!');
+    return { 
+      error: 'MCE configuration missing',
+      details: 'MCE_API_KEY not configured'
+    };
   }
 
   try {
-    const response = await fetch(`${MCE_SERVER_URL}/api/${action}`, {
+    const url = `${MCE_SERVER_URL}/api/${action}`;
+    
+    const requestOptions = {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${MCE_AUTH_TOKEN}`,
+        'X-API-Key': MCE_API_KEY,
       },
       body: JSON.stringify(params),
-    });
+    };
+    
+    console.log('Request headers:', requestOptions.headers);
+    
+    const response = await fetch(url, requestOptions);
+    
+    console.log('MCE Response Status:', response.status);
+    console.log('MCE Response Headers:', Object.fromEntries(response.headers.entries()));
+    
+    const responseText = await response.text();
+    console.log('MCE Response Body:', responseText);
 
     if (!response.ok) {
-      console.error(`MCP Server error: ${response.status}`);
-      return { error: `MCP Server error: ${response.status}` };
+      return { 
+        error: `MCE Server error: ${response.status}`,
+        details: responseText
+      };
     }
 
-    return await response.json();
+    try {
+      const data = JSON.parse(responseText);
+      console.log('✅ MCE call successful, parsed data:', data);
+      return data;
+    } catch (e) {
+      console.log('✅ MCE call successful, raw response:', responseText);
+      return { success: true, response: responseText };
+    }
+
   } catch (error) {
-    console.error('MCP Server call failed:', error);
-    return { error: error.message };
+    console.error('❌ MCE Server call failed:', error.message);
+    console.error('Full error:', error);
+    return { 
+      error: 'MCE connection failed',
+      details: error.message
+    };
   }
 }
 
 export async function POST(request) {
-  console.log('Chat API route called at:', new Date().toISOString());
+  console.log('=== CHAT ROUTE CALLED ===');
+  console.log('Timestamp:', new Date().toISOString());
+  console.log('Environment vars check:');
+  console.log('- CLAUDE_API_KEY exists:', !!process.env.CLAUDE_API_KEY);
+  console.log('- MCE_API_KEY exists:', !!process.env.MCE_API_KEY);
+  console.log('- MCE_SERVER_URL:', process.env.MCE_SERVER_URL || 'using default');
   
-  // Check if Claude API key is set
   if (!process.env.CLAUDE_API_KEY) {
-    console.error('CLAUDE_API_KEY is not set in environment variables');
     return Response.json(
-      { 
-        error: 'Claude API key is not configured',
-        details: 'Please set CLAUDE_API_KEY in Vercel environment variables'
-      },
+      { error: 'Claude API key is not configured' },
       { status: 500 }
     );
   }
 
-  // Allow model override via environment variable
-  const OVERRIDE_MODEL = process.env.CLAUDE_MODEL;
+  const modelToUse = process.env.CLAUDE_MODEL || 'claude-3-5-sonnet-20240620';
   
   try {
-    // Initialize Anthropic client
     const anthropic = new Anthropic({
       apiKey: process.env.CLAUDE_API_KEY,
     });
-
-    // Select model to use
-    let modelToUse;
     
-    if (OVERRIDE_MODEL) {
-      // If there's an environment variable override, use it
-      console.log('Using model from environment variable:', OVERRIDE_MODEL);
-      modelToUse = OVERRIDE_MODEL;
-    } else {
-      // Otherwise, auto-detect the best available model
-      try {
-        modelToUse = await selectBestModel(anthropic);
-        console.log('Auto-selected model:', modelToUse);
-      } catch (modelError) {
-        console.error('Model selection failed:', modelError);
-        
-        return Response.json(
-          { 
-            error: 'Model selection failed',
-            details: modelError.message,
-            suggestion: 'You can set CLAUDE_MODEL environment variable to specify a model directly'
-          },
-          { status: 500 }
-        );
-      }
-    }
-
-    // Parse the incoming request
     const body = await request.json();
-    console.log('Request received with messages count:', body.messages?.length);
+    console.log('Request received, message count:', body.messages?.length);
     
     const { messages, stream = false } = body;
     
@@ -168,211 +102,99 @@ export async function POST(request) {
       );
     }
 
-    // Add system prompt for MCE context
-    const systemPrompt = `You are an AI assistant that helps create marketing emails and journeys in Salesforce Marketing Cloud Engagement. 
-    You can create emails, build journeys, and manage data extensions. 
-    When a user asks to create an email, describe what you would create and ask for confirmation before actually creating it in MCE.
-    You have access to a Marketing Cloud instance through API calls.`;
+    const systemPrompt = `You are an AI assistant that helps create marketing emails in Salesforce Marketing Cloud Engagement. 
+    When a user asks to create an email, respond with "I'll create an email for you" and then describe what you're creating.
+    Be clear when you're actually creating an email vs just discussing it.`;
 
-    // Ensure messages are in the correct format for Claude
     const formattedMessages = messages.map(msg => ({
       role: msg.role === 'system' || msg.role === 'user' || msg.role === 'assistant' ? msg.role : 'user',
       content: String(msg.content || '')
     }));
 
-    // Non-streaming response
     if (!stream) {
-      console.log(`Creating non-streaming response with model: ${modelToUse}`);
+      console.log('Creating non-streaming Claude response...');
       
-      try {
-        const response = await anthropic.messages.create({
-          model: modelToUse,
-          max_tokens: 1024,
-          messages: formattedMessages,
-          system: systemPrompt,
-        });
-
-        console.log('Claude response received successfully');
-
-        // Extract the response content
-        const content = response.content[0]?.text || 'No response generated';
-        
-        // Check if Claude's response includes any MCE actions
-        let mceResult = null;
-        if (content.toLowerCase().includes('creating email') || 
-            content.toLowerCase().includes('create email')) {
-          // Only try to create in MCE if auth token is set
-          if (process.env.MCE_AUTH_TOKEN) {
-            try {
-              mceResult = await callMCPServer('email/create', {
-                name: 'Email from AI Chat',
-                subject: 'AI Generated Email',
-                content: content,
-              });
-            } catch (error) {
-              console.error('MCE creation failed:', error);
-              mceResult = { error: 'MCE creation failed', details: error.message };
-            }
-          }
-        }
-
-        return Response.json({
-          content: content,
-          mceResult: mceResult,
-          model: modelToUse,
-        });
-
-      } catch (claudeError) {
-        console.error('Claude API error:', claudeError);
-        
-        // If model doesn't exist, clear cache and suggest retry
-        if (claudeError.status === 404) {
-          cachedModel = null;
-          lastModelCheck = null;
-          
-          return Response.json(
-            { 
-              error: 'Model not found',
-              details: `Model ${modelToUse} is not available`,
-              suggestion: 'Try again (will auto-select a different model) or set CLAUDE_MODEL env variable'
-            },
-            { status: 500 }
-          );
-        }
-        
-        // Check for other common errors
-        if (claudeError.status === 401) {
-          return Response.json(
-            { 
-              error: 'Invalid Claude API key',
-              details: 'Please check your CLAUDE_API_KEY in Vercel settings'
-            },
-            { status: 500 }
-          );
-        } else if (claudeError.status === 429) {
-          return Response.json(
-            { 
-              error: 'Rate limit exceeded',
-              details: 'Too many requests to Claude API. Please wait a moment.'
-            },
-            { status: 429 }
-          );
-        } else {
-          return Response.json(
-            { 
-              error: 'Claude API error',
-              details: claudeError.message || 'Unknown error occurred',
-              model: modelToUse
-            },
-            { status: 500 }
-          );
-        }
-      }
-    }
-
-    // Streaming response
-    console.log(`Creating streaming response with model: ${modelToUse}`);
-    
-    try {
-      const claudeStream = await anthropic.messages.create({
+      const response = await anthropic.messages.create({
         model: modelToUse,
         max_tokens: 1024,
         messages: formattedMessages,
         system: systemPrompt,
-        stream: true,
       });
 
-      const encoder = new TextEncoder();
-      let fullResponse = '';
+      const content = response.content[0]?.text || 'No response generated';
+      console.log('Claude response received, length:', content.length);
+      console.log('First 200 chars of response:', content.substring(0, 200));
       
-      // Create the streaming response
-      const readableStream = new ReadableStream({
-        async start(controller) {
-          try {
-            // Send model info at the start
-            controller.enqueue(encoder.encode(`data: ${JSON.stringify({ model: modelToUse })}\n\n`));
-            
-            for await (const chunk of claudeStream) {
-              const text = chunk.delta?.text || '';
-              if (text) {
-                fullResponse += text;
-                controller.enqueue(encoder.encode(`data: ${JSON.stringify({ text })}\n\n`));
-              }
-            }
-            
-            // Check for MCE actions after stream completes
-            if (fullResponse.toLowerCase().includes('creating email') && process.env.MCE_AUTH_TOKEN) {
-              try {
-                const mceResult = await callMCPServer('email/create', {
-                  name: 'Email from AI Chat',
-                  subject: 'AI Generated Email',
-                  content: fullResponse,
-                });
-                controller.enqueue(encoder.encode(`data: ${JSON.stringify({ mceResult })}\n\n`));
-              } catch (error) {
-                console.error('MCE action failed:', error);
-              }
-            }
-            
-            controller.enqueue(encoder.encode('data: [DONE]\n\n'));
-            controller.close();
-          } catch (streamError) {
-            console.error('Stream error:', streamError);
-            controller.error(streamError);
-          }
-        },
-      });
-
-      return new Response(readableStream, {
-        headers: {
-          'Content-Type': 'text/event-stream',
-          'Cache-Control': 'no-cache',
-          'Connection': 'keep-alive',
-        },
-      });
-
-    } catch (claudeError) {
-      console.error('Claude streaming error:', claudeError);
+      // ALWAYS try to create email if the word "email" is mentioned
+      // This is for debugging - remove once working
+      let mceResult = null;
       
-      // Clear cache on 404
-      if (claudeError.status === 404) {
-        cachedModel = null;
-        lastModelCheck = null;
+      if (content.toLowerCase().includes('email')) {
+        console.log('📧 EMAIL KEYWORD DETECTED - ATTEMPTING MCE CREATION');
+        
+        if (process.env.MCE_API_KEY) {
+          const testEmail = {
+            name: `Test Email - ${new Date().toLocaleString()}`,
+            subject: 'Test Email from Chat',
+            template: 'custom',
+            content: {
+              headline: 'Test Email',
+              message: 'This is a test email created from the chat interface.',
+              nlpCommand: content
+            }
+          };
+          
+          console.log('Creating email with params:', testEmail);
+          
+          mceResult = await callMCPServer('email/create', testEmail);
+          
+          console.log('MCE Result:', JSON.stringify(mceResult, null, 2));
+        } else {
+          console.log('❌ Cannot create email - MCE_API_KEY not found');
+          mceResult = {
+            error: 'MCE_API_KEY not configured',
+            debug: true
+          };
+        }
+      } else {
+        console.log('No email keyword found in response');
       }
-      
-      return Response.json(
-        { 
-          error: 'Claude streaming error',
-          details: claudeError.message || 'Unknown error occurred',
-          model: modelToUse
-        },
-        { status: 500 }
-      );
+
+      return Response.json({
+        content: content,
+        mceResult: mceResult,
+        model: modelToUse,
+        debug: {
+          hasEmailKeyword: content.toLowerCase().includes('email'),
+          hasMCEKey: !!process.env.MCE_API_KEY,
+          timestamp: new Date().toISOString()
+        }
+      });
     }
 
+    // Streaming response (simplified for debugging)
+    console.log('Streaming not used in debug mode');
+    return Response.json({
+      error: 'Streaming disabled for debugging',
+      suggestion: 'Use non-streaming mode'
+    });
+
   } catch (error) {
-    console.error('API Route Error:', error);
+    console.error('=== ROUTE ERROR ===');
+    console.error('Error message:', error.message);
     console.error('Error stack:', error.stack);
     
-    // Return detailed error for debugging
     return Response.json(
       { 
         error: error.message || 'Internal server error',
-        details: error.stack || 'No stack trace available',
+        details: error.stack,
         timestamp: new Date().toISOString(),
-        env: {
-          hasClaudeKey: !!process.env.CLAUDE_API_KEY,
-          hasMCEToken: !!process.env.MCE_AUTH_TOKEN,
-          hasMCEUrl: !!process.env.MCE_SERVER_URL,
-          modelOverride: process.env.CLAUDE_MODEL || 'none',
-        }
       },
       { status: 500 }
     );
   }
 }
 
-// Handle OPTIONS for CORS
 export async function OPTIONS(request) {
   return new Response(null, {
     status: 200,
