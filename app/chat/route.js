@@ -1,4 +1,4 @@
-// app/chat/route.js - WITH CLAUDE SONNET 4
+// app/chat/route.js - WITH CLAUDE SONNET 4 latest
 import { Anthropic } from '@anthropic-ai/sdk';
 
 // Helper to call your MCP server
