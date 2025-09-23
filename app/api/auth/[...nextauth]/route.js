@@ -1,35 +1,9 @@
-// app/api/auth/[...nextauth]/route.js
+// app/api/auth/[...nextauth]/route.js - With Debug Logging
 import NextAuth from 'next-auth';
-import GoogleProvider from 'next-auth/providers/google';
-import GitHubProvider from 'next-auth/providers/github';
 import CredentialsProvider from 'next-auth/providers/credentials';
 
 const authOptions = {
   providers: [
-    // Option 1: Google OAuth (if configured)
-    ...(process.env.GOOGLE_CLIENT_ID ? [
-      GoogleProvider({
-        clientId: process.env.GOOGLE_CLIENT_ID,
-        clientSecret: process.env.GOOGLE_CLIENT_SECRET || '',
-        authorization: {
-          params: {
-            prompt: "consent",
-            access_type: "offline",
-            response_type: "code"
-          }
-        }
-      })
-    ] : []),
-    
-    // Option 2: GitHub OAuth (if configured)
-    ...(process.env.GITHUB_CLIENT_ID ? [
-      GitHubProvider({
-        clientId: process.env.GITHUB_CLIENT_ID,
-        clientSecret: process.env.GITHUB_CLIENT_SECRET || '',
-      })
-    ] : []),
-    
-    // Option 3: Simple email/password (always available for testing)
     CredentialsProvider({
       name: 'credentials',
       credentials: {
@@ -37,14 +11,34 @@ const authOptions = {
         password: { label: "Password", type: "password" }
       },
       async authorize(credentials) {
-        // Check against environment variables
-        const validEmail = process.env.ADMIN_EMAIL || 'admin@test.com';
-        const validPassword = process.env.ADMIN_PASSWORD || 'password123';
+        // Debug logging
+        console.log('=== AUTH DEBUG ===');
+        console.log('Login attempt for:', credentials?.email);
+        console.log('ADMIN_EMAIL from env:', process.env.ADMIN_EMAIL);
+        console.log('Has ADMIN_PASSWORD:', !!process.env.ADMIN_PASSWORD);
+        console.log('Password length provided:', credentials?.password?.length);
         
-        console.log('Login attempt:', credentials?.email);
+        // Get credentials from environment
+        const validEmail = process.env.ADMIN_EMAIL;
+        const validPassword = process.env.ADMIN_PASSWORD;
         
-        if (credentials?.email === validEmail && credentials?.password === validPassword) {
-          console.log('Login successful for:', validEmail);
+        // Check if environment variables are set
+        if (!validEmail || !validPassword) {
+          console.error('❌ ADMIN_EMAIL or ADMIN_PASSWORD not set in environment variables!');
+          console.log('ADMIN_EMAIL exists:', !!validEmail);
+          console.log('ADMIN_PASSWORD exists:', !!validPassword);
+          return null;
+        }
+        
+        // Check credentials
+        const emailMatch = credentials?.email === validEmail;
+        const passwordMatch = credentials?.password === validPassword;
+        
+        console.log('Email match:', emailMatch);
+        console.log('Password match:', passwordMatch);
+        
+        if (emailMatch && passwordMatch) {
+          console.log('✅ Login successful for:', validEmail);
           return {
             id: '1',
             email: credentials.email,
@@ -52,9 +46,12 @@ const authOptions = {
           };
         }
         
-        // Check authorized users list
-        const authorizedUsers = process.env.AUTHORIZED_EMAILS?.split(',') || [];
-        if (authorizedUsers.includes(credentials?.email) && credentials?.password === validPassword) {
+        // Check authorized users list (with same password)
+        const authorizedUsers = process.env.AUTHORIZED_EMAILS?.split(',').map(e => e.trim()) || [];
+        console.log('Authorized users:', authorizedUsers);
+        
+        if (authorizedUsers.includes(credentials?.email) && passwordMatch) {
+          console.log('✅ Authorized user login:', credentials.email);
           return {
             id: credentials.email,
             email: credentials.email,
@@ -62,39 +59,19 @@ const authOptions = {
           };
         }
         
-        console.log('Login failed for:', credentials?.email);
+        console.log('❌ Login failed - invalid credentials');
         return null;
       }
     }),
   ],
   
   callbacks: {
-    async signIn({ user, account, profile }) {
-      // Optional: Restrict to specific email domains or addresses
-      const allowedEmails = process.env.ALLOWED_EMAILS?.split(',') || [];
-      const allowedDomains = process.env.ALLOWED_DOMAINS?.split(',') || [];
-      
-      // If no restrictions are set, allow all
-      if (allowedEmails.length === 0 && allowedDomains.length === 0) {
-        return true;
-      }
-      
-      // Check if email is in allowed list
-      if (allowedEmails.length > 0 && allowedEmails.includes(user.email)) {
-        return true;
-      }
-      
-      // Check if domain is allowed
-      const domain = user.email?.split('@')[1];
-      if (allowedDomains.length > 0 && allowedDomains.includes(domain)) {
-        return true;
-      }
-      
-      return false; // Reject sign in
+    async signIn({ user }) {
+      console.log('Sign-in callback for user:', user?.email);
+      return true;
     },
     
     async session({ session, token }) {
-      // Add user ID to session
       if (session?.user) {
         session.user.id = token.sub;
       }
@@ -109,20 +86,14 @@ const authOptions = {
     }
   },
   
-  // REMOVED custom pages - use default NextAuth pages
-  // pages: {
-  //   signIn: '/auth/signin',  // These don't exist!
-  //   error: '/auth/error',
-  // },
-  
-  secret: process.env.NEXTAUTH_SECRET || 'development-secret-change-in-production',
+  secret: process.env.NEXTAUTH_SECRET,
   
   session: {
     strategy: 'jwt',
-    maxAge: 30 * 24 * 60 * 60, // 30 days
+    maxAge: 30 * 24 * 60 * 60,
   },
   
-  debug: true, // Enable debug messages in development
+  debug: true, // Enable debug mode
 };
 
 const handler = NextAuth(authOptions);
