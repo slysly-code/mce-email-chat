@@ -23,7 +23,7 @@ Vercel Frontend → Vercel API Routes → Claude AI
 
 ### Deploy to Vercel
 
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/YOUR_USERNAME/mce-email-chat&env=CLAUDE_API_KEY,MCE_AUTH_TOKEN,MCE_SERVER_URL)
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/slysly-code/mce-email-chat&env=CLAUDE_API_KEY,MCE_AUTH_TOKEN,MCE_SERVER_URL)
 
 1. Click the button above
 2. Add your environment variables:
@@ -45,7 +45,7 @@ Vercel Frontend → Vercel API Routes → Claude AI
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/YOUR_USERNAME/mce-email-chat.git
+git clone https://github.com/slysly-code/mce-email-chat.git
 cd mce-email-chat
 ```
 
@@ -73,16 +73,16 @@ npm run dev
 ```
 mce-email-chat/
 ├── app/
-│   ├── api/
-│   │   └── chat/
-│   │       └── route.js      # API endpoint for chat
+│   ├── chat/
+│   │   └── route.js         # API endpoint for chat
 │   ├── page.js              # Main chat interface
 │   ├── layout.js            # App layout
 │   └── globals.css          # Global styles
 ├── package.json
 ├── tailwind.config.js
-├── vercel.json
-└── .env.local              # Environment variables (not in git)
+├── vercel.json              # Vercel configuration
+├── postcss.config.js
+└── .env.local               # Environment variables (not in git)
 ```
 
 ## Configuration
@@ -95,17 +95,35 @@ mce-email-chat/
 | `MCE_AUTH_TOKEN` | Authentication token for MCE server | Yes |
 | `MCE_SERVER_URL` | URL of your MCE server | Yes |
 
-### Customizing MCE Endpoints
+### Vercel Configuration
 
-Edit `app/api/chat/route.js` to match your MCE server endpoints:
+The project includes a `vercel.json` file that sets:
+- Maximum function duration: 30 seconds for the chat API route
+- This allows enough time for Claude API responses and MCE operations
+
+No additional Vercel configuration is needed.
+
+### Customizing MCE Integration
+
+Edit `app/chat/route.js` to customize your MCE server integration:
 
 ```javascript
-// Update these endpoints to match your server
-case 'create_marketing_email':
-  const response = await axios.post(`${MCE_SERVER_URL}/api/email/create`, {...});
+// The route uses a helper function to call your MCE server
+async function callMCPServer(action, params) {
+  const MCE_SERVER_URL = process.env.MCE_SERVER_URL || 'https://salesforce-mce-api.fly.dev';
+  const MCE_AUTH_TOKEN = process.env.MCE_AUTH_TOKEN;
+
+  const response = await fetch(`${MCE_SERVER_URL}/api/${action}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${MCE_AUTH_TOKEN}`,
+    },
+    body: JSON.stringify(params),
+  });
   
-case 'get_data_extensions':
-  const response = await axios.get(`${MCE_SERVER_URL}/api/data-extensions`, {...});
+  return await response.json();
+}
 ```
 
 ## Usage
@@ -123,17 +141,19 @@ case 'get_data_extensions':
 - "List all available data extensions"
 - "Create a re-engagement campaign email"
 
-## Tools Available
+## API Features
 
-The chat interface can:
-- **create_marketing_email**: Create emails in MCE
-- **preview_email**: Preview before sending
-- **get_data_extensions**: List available audiences
+The chat interface supports:
+- **Streaming responses**: Real-time Claude AI responses
+- **Non-streaming mode**: Simple request-response pattern
+- **MCE integration**: Automatic detection of email creation requests
+- **CORS support**: Proper cross-origin request handling
 
 ## Deployment Options
 
 ### Vercel (Recommended)
-- Free tier available
+- Free tier available (10-second timeout)
+- Pro tier recommended for production (60-second timeout)
 - Automatic deployments from GitHub
 - Serverless functions for API
 
@@ -141,6 +161,7 @@ The chat interface can:
 - **Railway**: Full-stack platform with easy deployment
 - **Render**: Simple cloud platform
 - **Fly.io**: Same platform as your MCE server
+- **Netlify**: With function support
 
 ## Related Projects
 
@@ -149,21 +170,32 @@ The chat interface can:
 ## Troubleshooting
 
 ### Connection Issues
-- Verify MCE_SERVER_URL is correct
-- Check MCE_AUTH_TOKEN is valid
-- Ensure MCE server is running
+- Verify `MCE_SERVER_URL` is correct and accessible
+- Check `MCE_AUTH_TOKEN` is valid
+- Ensure MCE server is running on Fly.io
 
 ### API Errors
-- Verify CLAUDE_API_KEY is correct
-- Check API rate limits
-- Review browser console for errors
+- Verify `CLAUDE_API_KEY` is correct
+- Check Anthropic API rate limits
+- Review browser console for detailed error messages
+- Check Vercel function logs for server-side errors
+
+### Timeout Issues
+- Free Vercel tier has 10-second timeout limit
+- Consider upgrading to Pro for 60-second timeout
+- Or optimize API calls to be faster
+
+### Path Issues
+- Frontend calls should use `/chat` endpoint
+- The API route is at `app/chat/route.js`
+- Update frontend if it's calling `/api/chat`
 
 ## Contributing
 
 1. Fork the repository
-2. Create a feature branch
-3. Commit your changes
-4. Push to the branch
+2. Create a feature branch (`git checkout -b feature/AmazingFeature`)
+3. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
+4. Push to the branch (`git push origin feature/AmazingFeature`)
 5. Open a Pull Request
 
 ## License
@@ -175,9 +207,11 @@ MIT
 For issues or questions:
 - Open an issue on GitHub
 - Check existing issues for solutions
+- Review the [MCE Server documentation](https://github.com/slysly-code/salesforce-mce-mcp-server-api)
 
 ## Acknowledgments
 
 - Built with [Next.js](https://nextjs.org/)
 - Powered by [Claude AI](https://anthropic.com)
 - Styled with [Tailwind CSS](https://tailwindcss.com/)
+- Deployed on [Vercel](https://vercel.com)
