@@ -1,4 +1,4 @@
-// app/chat/route.js - CORRECTED with logging
+// app/chat/route.js - FINAL CORRECTED VERSION
 import { Anthropic } from '@anthropic-ai/sdk';
 import { getServerSession } from "next-auth/next";
 import { authOptions } from '../api/auth/[...nextauth]/route.js';
@@ -8,7 +8,7 @@ async function callMCPServer(action, params) {
   const MCE_SERVER_URL = process.env.MCE_SERVER_URL || 'https://salesforce-mce-api.fly.dev';
   const MCE_API_KEY = process.env.MCE_API_KEY;
 
-  // *** THIS IS THE LOG WE NEED TO DEBUG THE MCE SERVER ***
+  // This log is helpful for debugging what is sent to the MCE server
   console.log('--- MCE Server Request Body ---', JSON.stringify(params, null, 2));
 
   try {
@@ -45,11 +45,12 @@ async function callMCPServer(action, params) {
 export async function POST(request) {
   console.log('Chat route called at:', new Date().toISOString());
 
-  // --- Authentication Check ---
+  // --- START: API Key and Session Authentication ---
   const session = await getServerSession(authOptions);
-  const apiKey = request.headers.get('x-api-key');
+  const apiKey = request.headers.get('x-api-key'); // Headers are case-insensitive
   const serverApiKey = process.env.SERVER_API_KEY;
 
+  // Authenticate request: Must have a valid session OR a valid API key
   if (!session && (!serverApiKey || apiKey !== serverApiKey)) {
     console.log('Authentication failed: No session and invalid or missing API key.');
     return new Response(JSON.stringify({ error: 'Unauthorized' }), {
@@ -58,6 +59,7 @@ export async function POST(request) {
     });
   }
   console.log('Authentication successful.');
+  // --- END: Authentication ---
 
   if (!process.env.CLAUDE_API_KEY) {
     return new Response(
@@ -74,8 +76,10 @@ export async function POST(request) {
     });
 
     const body = await request.json();
+    console.log('Request received with', body.messages?.length, 'messages');
+    
     const { messages, stream = false } = body;
-
+    
     if (!messages || !Array.isArray(messages)) {
       return new Response(
         JSON.stringify({ error: 'Messages array is required' }),
@@ -98,6 +102,8 @@ export async function POST(request) {
     }));
 
     if (!stream) {
+      console.log(`Using model: ${modelToUse}`);
+      
       const response = await anthropic.messages.create({
         model: modelToUse,
         max_tokens: 1024,
@@ -106,31 +112,49 @@ export async function POST(request) {
       });
 
       const content = response.content[0]?.text || 'No response generated';
+      console.log('Claude responded successfully');
+      
       let mceResult = null;
-
-      const shouldCreate =
-        (content.toLowerCase().includes("i'll create") ||
+      
+      const shouldCreate = 
+        (content.toLowerCase().includes("i'll create") || 
          content.toLowerCase().includes("i will create") ||
          content.toLowerCase().includes("creating this email")) &&
-        content.toLowerCase().includes('name:') &&
+        content.toLowerCase().includes('name:') && 
         content.toLowerCase().includes('subject:');
-
+      
       if (shouldCreate) {
         console.log('📧 Creating email in MCE...');
+        
         const nameMatch = content.match(/Name:\s*([^\n]+)/i);
         const subjectMatch = content.match(/Subject:\s*([^\n]+)/i);
         const contentMatch = content.match(/Content:\s*([\s\S]+?)(?=\n\n|\n[A-Z]|$)/i);
         
-        const emailName = nameMatch ? nameMatch[1].trim() : `AI Email ${new Date().toLocaleDateString()}`;
-        const emailSubject = subjectMatch ? subjectMatch[1].trim() : 'Marketing Email';
+        let emailName = nameMatch ? nameMatch[1].trim() : `AI Email ${new Date().toLocaleDateString()}`;
+        let emailSubject = subjectMatch ? subjectMatch[1].trim() : 'Marketing Email';
         const emailContent = contentMatch ? contentMatch[1].trim() : content;
+        
+        // *** SOLUTION: Clean the strings to remove Markdown characters ***
+        emailName = emailName.replace(/\*\*/g, '');
+        emailSubject = emailSubject.replace(/\*\*/g, '');
 
-        mceResult = await callMCPServer('tool/build_email', {
-          name: emailName,
-          subject: emailSubject,
-          nlpCommand: emailContent,
-          template: 'custom'
-        });
+        if (process.env.MCE_API_KEY) {
+          mceResult = await callMCPServer('tool/build_email', {
+            name: emailName,
+            subject: emailSubject,
+            nlpCommand: emailContent,
+            template: 'custom'
+          });
+          
+          console.log('MCE Result:', mceResult);
+        } else {
+          mceResult = {
+            error: 'MCE_API_KEY not configured',
+            details: 'Please set MCE_API_KEY in environment variables'
+          };
+        }
+      } else {
+        console.log('Not creating email - response appears to be informational only');
       }
 
       return new Response(JSON.stringify({
@@ -141,13 +165,17 @@ export async function POST(request) {
         headers: { 'Content-Type': 'application/json' },
       });
     }
-    
-    // (Streaming logic remains the same)
+
+    // Streaming response logic would go here...
+    // Note: If you use streaming, you would need to apply the same string cleaning logic.
 
   } catch (error) {
     console.error('Route error:', error);
     return new Response(
-      JSON.stringify({ error: error.message || 'Internal server error' }),
+      JSON.stringify({ 
+        error: error.message || 'Internal server error',
+        timestamp: new Date().toISOString(),
+      }),
       { status: 500, headers: { 'Content-Type': 'application/json' } }
     );
   }
